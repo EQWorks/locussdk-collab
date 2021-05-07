@@ -2,6 +2,12 @@ from locussdk import get_avail_poi_lists
 
 
 def search_avail_poi_lists(name, **kwargs):
-    global_lists = get_avail_poi_lists(list_type='global')
+    # build parameters we want to pass into get_avail_poi_lists()
+    params = {'list_type': 'global'}  # default search in global
+    for k in ['list_type', 'whitelabel', 'customer']:
+        if v := kwargs.pop(k, None):
+            params[k] = v
 
-    return global_lists[global_lists['name'].str.contains(name, **kwargs)]
+    lists = get_avail_poi_lists(**params)
+
+    return lists[lists['name'].str.contains(name, **kwargs)]
