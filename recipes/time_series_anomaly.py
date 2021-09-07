@@ -68,6 +68,7 @@ def prep_datetime(df, datetime_column):
     return df
 
 
+# heavily inspired by https://github.com/susanli2016/Machine-Learning-with-Python
 class TimeSeriesAnomalyDetector:
 
     def __init__(self, df, metrics_column, datetime_column=None, ScalerClass=None, time_steps=None, split=0.8):
