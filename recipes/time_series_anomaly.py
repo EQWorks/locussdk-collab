@@ -6,7 +6,6 @@ from tensorflow import keras
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, LSTM, Dropout, RepeatVector, TimeDistributed
 import pandas as pd
-
 import plotly.express as px
 from plotly import graph_objects as go
 
