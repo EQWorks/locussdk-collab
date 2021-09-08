@@ -74,7 +74,7 @@ class CategoricalAnomalyDetector:
             'featureidkey': f'properties.{self.category_column}',
             'locations': self.category_column,
             'color': 'anomaly',
-            'hover_name': self.metrics_column,
+            'hover_data': [self.metrics_column, self.category_column, 'anomaly'],
             'opacity': 0.5,
             'mapbox_style': 'carto-positron',
             'center': {'lat': 44, 'lon': -79},
