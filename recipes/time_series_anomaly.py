@@ -154,10 +154,10 @@ class TimeSeriesAnomalyDetector:
         if df is None:
             df = self.df
 
-        if self.ScalerClass:
-            scaler = self.ScalerClass()
-            scaler = scaler.fit(df[[self.metrics_column]])
-            df[self.metrics_column] = scaler.transform(df[[self.metrics_column]])
+            if self.ScalerClass:
+                scaler = self.ScalerClass()
+                scaler = scaler.fit(df[[self.metrics_column]])
+                df[self.metrics_column] = scaler.transform(df[[self.metrics_column]])
 
         x, _ = create_sequences(df, self.metrics_column, self.time_steps)
         x_pred = self.model.predict(x, verbose=0)
