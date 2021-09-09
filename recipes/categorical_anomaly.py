@@ -33,8 +33,8 @@ class CategoricalAnomalyDetector:
             scaler = scaler.fit(self.df[[self.metrics_column]])
             self.df[self.metrics_column] = scaler.transform(self.df[[self.metrics_column]])
 
-    def create_model(self):
-        self.model = IsolationForest()
+    def create_model(self, **model_args):
+        self.model = IsolationForest(**model_args)
         return self.model
 
     def predict(self, df = None):
