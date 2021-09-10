@@ -6,7 +6,6 @@ from tensorflow import keras
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, LSTM, Dropout, RepeatVector, TimeDistributed
 import pandas as pd
-
 import plotly.express as px
 from plotly import graph_objects as go
 
@@ -154,10 +153,10 @@ class TimeSeriesAnomalyDetector:
         if df is None:
             df = self.df
 
-        if self.ScalerClass:
-            scaler = self.ScalerClass()
-            scaler = scaler.fit(df[[self.metrics_column]])
-            df[self.metrics_column] = scaler.transform(df[[self.metrics_column]])
+            if self.ScalerClass:
+                scaler = self.ScalerClass()
+                scaler = scaler.fit(df[[self.metrics_column]])
+                df[self.metrics_column] = scaler.transform(df[[self.metrics_column]])
 
         x, _ = create_sequences(df, self.metrics_column, self.time_steps)
         x_pred = self.model.predict(x, verbose=0)
