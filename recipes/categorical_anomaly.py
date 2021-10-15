@@ -39,7 +39,7 @@ class CategoricalAnomalyDetector:
         self.score_df = None
         self.scale()
 
-            
+
     def scale(self, ScalerClass = None):
         if ScalerClass is None:
             ScalerClass = self.ScalerClass
@@ -48,8 +48,8 @@ class CategoricalAnomalyDetector:
             scaler = ScalerClass()
             scaler = scaler.fit(self.df[[self.metrics_column]])
             self.df[self.metrics_column] = scaler.transform(self.df[[self.metrics_column]])
-    
-    
+
+
     def tune_params(self,df, metrics_column):
         eps = 1e-8
         cont_max = .1
@@ -99,7 +99,7 @@ class CategoricalAnomalyDetector:
             mean_vc_out = np.mean(running_metrics['vck_out'])
             mean_vc_in = np.mean(running_metrics['vck_in'])
 
-            ncpc = (mean_mc_out - mean_mc_in)/np.sqrt((eps + ((1/samps)*(mean_vc_out 
+            ncpc = (mean_mc_out - mean_mc_in)/np.sqrt((eps + ((1/samps)*(mean_vc_out
                                                                          + mean_vc_in))))
             dfc = (2*samps) - 2
 
@@ -110,7 +110,7 @@ class CategoricalAnomalyDetector:
             K_opt = k_grid[largest_idx]
             T_opt = running_metrics['tck'][largest_idx]
             Z = Z.cdf(T_opt)
-            collector.append([K_opt, T_opt, Z, contamination])      
+            collector.append([K_opt, T_opt, Z, contamination])
 
         max_cdf = 0.
         self.tuned_params = {}
@@ -147,7 +147,7 @@ class CategoricalAnomalyDetector:
             self.model = IsolationForest(**model_args)
             return self.model
 
-    
+
     def predict(self, df = None):
         if df is None:
             df = self.df
@@ -182,7 +182,7 @@ class CategoricalAnomalyDetector:
 
     def graph(self, no_geo: bool = False, **kwargs):
         if (no_geo and ((self.model_type == 'LODA') or type(self.metrics_column) == list)):
-            #Since we're dealing with higher dimensions with LODA, 
+            #Since we're dealing with higher dimensions with LODA,
             #we use UMAP to reduce them down to 2 dimensions so we can see what's happening
             if self.model_type == 'LODA':
                 numeric_features = list(self.df.select_dtypes(include=['int64', 'float64']).columns)
@@ -191,12 +191,12 @@ class CategoricalAnomalyDetector:
                 X = self.score_df[self.metrics_column].values
             reducer = umap.UMAP()
             transformed = reducer.fit_transform(X)
-            
+
             plt.figure(figsize=(10, 10))
             plt.subplot(111, aspect="auto")
             plt.subplots_adjust(
-                left=0.02, right=0.98, 
-                bottom=0.001, top=0.96, 
+                left=0.02, right=0.98,
+                bottom=0.001, top=0.96,
                 wspace=0.05, hspace=0.01
             )
             for types in np.unique(self.score_df["score"]):
@@ -245,3 +245,5 @@ class CategoricalAnomalyDetector:
                 **kwargs,
             }
             return px.choropleth_mapbox(**plotly_args)
+        else:
+            return("Please select an appropriate model type and make predictions")
