@@ -134,7 +134,7 @@ class CategoricalAnomalyDetector:
             self.model = OneClassSVM(**model_args)
             return self.model
         if self.model_type == 'LocalOutlierFactor':
-            res = input("Would you like to automatically tune hyperparameters?")
+            res = input("Would you like to automatically tune hyperparameters? ")
             if res == 'yes':
                 print("Automatically tuning parameters")
                 tuned_params = self.tune_params(self.df, self.metrics_column)
@@ -145,7 +145,7 @@ class CategoricalAnomalyDetector:
                 return self.model
         if self.model_type == 'IsolationForest':
             self.model = IsolationForest(**model_args)
-        return self.model
+            return self.model
 
     
     def predict(self, df = None):
@@ -171,7 +171,7 @@ class CategoricalAnomalyDetector:
             return score_df
         else:
             score_df = df.copy()
-            score_df['score'] = self.model.fit_predict(score_df[[self.metrics_column]])
+            score_df['score'] = self.model.fit_predict(score_df[[self.metrics_column]].values)
             score_df['anomaly'] = score_df['score'] <= -1
             self.score_df = score_df
             return score_df
@@ -188,7 +188,6 @@ class CategoricalAnomalyDetector:
                 numeric_features = list(self.df.select_dtypes(include=['int64', 'float64']).columns)
                 X = self.score_df[numeric_features].values
             else:
-                mets = self.metrics_column
                 X = self.score_df[self.metrics_column].values
             reducer = umap.UMAP()
             transformed = reducer.fit_transform(X)
@@ -225,8 +224,10 @@ class CategoricalAnomalyDetector:
             return px.scatter(**plotly_args)
 
         if self.model_type:
-            self.score_df = self.score_df.to_crs('epsg:4326')
-            hover = self.metrics_column
+            if type(self.metrics_column) == str:
+                hover = [self.metrics_column]
+            else:
+                hover = self.metrics_column
             hover.append(self.category_column)
             hover.append('anomaly')
             plotly_args = {
