@@ -124,143 +124,139 @@ class CategoricalAnomalyDetector:
         return(self.tuned_params)
 
 
-    def create_model(self, **model_args):
+    def create_model(self,auto_tune=None, **model_args):
         if self.model_type == 'LODA':
             self.model = LODA(**model_args)
-            return self.model
         if self.model_type == 'OneClassSVM':
             self.model = OneClassSVM(**model_args)
-            return self.model
         if self.model_type == 'LocalOutlierFactor':
-            res = input("Would you like to automatically tune hyperparameters? ")
-            if res == 'yes':
-                print("Automatically tuning parameters")
+            if auto_tune:
                 tuned_params = self.tune_params(self.df, self.metrics_column)
                 self.model = LocalOutlierFactor(n_neighbors=tuned_params['k'], contamination=tuned_params['c'])
-                return self.model
             else:
                 self.model = LocalOutlierFactor(**model_args)
-                return self.model
         if self.model_type == 'IsolationForest':
             self.model = IsolationForest(**model_args)
-            return self.model
+        return self.model
 
 
     def predict(self, df = None):
         if df is None:
             df = self.df
+
             if self.ScalerClass:
                 scaler = self.ScalerClass()
                 scaler = scaler.fit(df[[self.metrics_column]])
                 df[self.metrics_column] = scaler.transform(df[[self.metrics_column]])
-
+        score_df = df.copy()
         if self.model_type == 'LODA':
-            score_df = df.copy()
             numeric_features = list(score_df.select_dtypes(include=['int64', 'float64']).columns)
             score_df['score'] = self.model.fit_predict(score_df[numeric_features])
             score_df['anomaly'] = score_df['score'] <= -1
             self.score_df = score_df
-            return score_df
-        if (type(self.metrics_column) == list):
-            score_df = df.copy()
+        elif (type(self.metrics_column) == list):
             score_df['score'] = self.model.fit_predict(score_df[self.metrics_column])
             score_df['anomaly'] = score_df['score'] <= -1
             self.score_df = score_df
-            return score_df
         else:
-            score_df = df.copy()
             score_df['score'] = self.model.fit_predict(score_df[[self.metrics_column]].values)
             score_df['anomaly'] = score_df['score'] <= -1
             self.score_df = score_df
-            return score_df
+        return score_df
+
 
     def get_anomalies(self):
         if self.score_df is not None:
             return self.score_df.loc[self.score_df['anomaly'] == True]
 
-    def graph(self, no_geo: bool = False, three_d: bool = False, **kwargs):
-        if (three_d and no_geo and ((self.model_type == 'LODA') or type(self.metrics_column) == list)):
-            if self.model_type == 'LODA':
-                numeric_features = list(self.df.select_dtypes(include=['int64', 'float64']).columns)
-                X = self.score_df[numeric_features].values
-            else:
-                X = self.score_df[self.metrics_column].values
-            pca = PCA(n_components=3)
-            components = pca.fit_transform(X)
-            total_var = pca.explained_variance_ratio_.sum() * 100
-            score_df = self.score_df
-            score_df = pd.concat([self.score_df, pd.DataFrame(components)], axis=1)
-            score_df = score_df.rename(columns={0:'PC1', 1:'PC2', 2:'PC3'})
-            score_df = pd.concat([score_df, pd.DataFrame(self.model.negative_outlier_factor_)], axis=1)
-            score_df = score_df.rename(columns={0:'score1'})
-            score_df['score1'] = round(-1*score_df['score1'],4)
-            fig = px.scatter_3d(
-                score_df, x='PC1', y='PC2', z='PC3', 
-                color='anomaly',size='score1',size_max=25,
-                title=f'Total Explained Variance: {total_var:.2f}%',
-                hover_data = [self.category_column],
-                )
-            return fig.show()
-        
-        if (no_geo and ((self.model_type == 'LODA') or type(self.metrics_column) == list)):
-            if self.model_type == 'LODA':
-                numeric_features = list(self.df.select_dtypes(include=['int64', 'float64']).columns)
-                X = self.score_df[numeric_features].values
-                pca = PCA(n_components=2)
-                components = pca.fit_transform(X)
-                loadings = pca.components_.T * np.sqrt(pca.explained_variance_)
+
+    def graph_highd(self, three_d: bool = None, **kwargs):
+        try:
+            if three_d:
+                if self.model_type == 'LODA':
+                    numeric_features = list(self.df.select_dtypes(include=['int64', 'float64']).columns)
+                    feat_vals = self.score_df[numeric_features].values
+                else:
+                    feat_vals = self.score_df[self.metrics_column].values
+                pca = PCA(n_components=3)
+                components = pca.fit_transform(feat_vals)
+                total_var = pca.explained_variance_ratio_.sum() * 100
                 score_df = self.score_df
-                score_df['PC1'] = components[:,0]
-                score_df['PC2'] = components[:,1]
-                fig = px.scatter(score_df, x='PC1', y='PC2', title='PCA Plot - Anomalies',
-                                 color='anomaly', hover_data=[self.category_column],
-                                 )
-                for i, feature in enumerate(numeric_features):
-                    fig.add_shape(
-                        type='line',
-                        x0=0, y0=0,
-                        x1=loadings[i, 0],
-                        y1=loadings[i, 1]
-                            )
-                    fig.add_annotation(
-                            x=loadings[i, 0],
-                            y=loadings[i, 1],
-                            ax=0, ay=0,
-                            xanchor="center",
-                            yanchor="bottom",
-                            text=feature,
-                                )
-                return fig.show()
-            else:
-                X = self.score_df[self.metrics_column].values
-                pca = PCA(n_components=2)
-                components = pca.fit_transform(X)
-                loadings = pca.components_.T * np.sqrt(pca.explained_variance_)
                 score_df = pd.concat([self.score_df, pd.DataFrame(components)], axis=1)
-                score_df = score_df.rename(columns={0:'PC1', 1:'PC2'})
+                score_df = score_df.rename(columns={0:'PC1', 1:'PC2', 2:'PC3'})
+                score_df = pd.concat([score_df, pd.DataFrame(self.model.negative_outlier_factor_)], axis=1)
+                score_df = score_df.rename(columns={0:'score1'})
+                score_df['score1'] = round(-1*score_df['score1'],4)
+                fig = px.scatter_3d(
+                    score_df, x='PC1', y='PC2', z='PC3',
+                    color='anomaly',size='score1',size_max=25,
+                    title=f'Total Explained Variance: {total_var:.2f}%',
+                    hover_data = [self.category_column],
+                    )
 
-                fig = px.scatter(score_df, x='PC1', y='PC2', title='PCA Plot - Anomalies',
-                                 color='anomaly', hover_data=[self.category_column],
-                                 )
-
-                for i, feature in enumerate(self.metrics_column):
-                    fig.add_shape(
+            else:
+                if self.model_type == 'LODA':
+                    numeric_features = list(self.df.select_dtypes(include=['int64', 'float64']).columns)
+                    feat_vals = self.score_df[numeric_features].values
+                    pca = PCA(n_components=2)
+                    components = pca.fit_transform(feat_vals)
+                    loadings = pca.components_.T * np.sqrt(pca.explained_variance_)
+                    score_df = self.score_df
+                    score_df['PC1'] = components[:,0]
+                    score_df['PC2'] = components[:,1]
+                    fig = px.scatter(score_df, x='PC1', y='PC2', title='PCA Plot - Anomalies',
+                                     color='anomaly', hover_data=[self.category_column],
+                                     )
+                    for i, feature in enumerate(numeric_features):
+                        fig.add_shape(
                             type='line',
                             x0=0, y0=0,
                             x1=loadings[i, 0],
                             y1=loadings[i, 1]
-                            )
-                    fig.add_annotation(
-                            x=loadings[i, 0],
-                            y=loadings[i, 1],
-                            ax=0, ay=0,
-                            xanchor="center",
-                            yanchor="bottom",
-                            text=feature,
-                            )
-                return fig.show()
+                                )
+                        fig.add_annotation(
+                                x=loadings[i, 0],
+                                y=loadings[i, 1],
+                                ax=0, ay=0,
+                                xanchor="center",
+                                yanchor="bottom",
+                                text=feature,
+                                    )
 
-        if no_geo or not isinstance(self.score_df, gpd.GeoDataFrame):
+                else:
+                    feat_vals = self.score_df[self.metrics_column].values
+                    pca = PCA(n_components=2)
+                    components = pca.fit_transform(feat_vals)
+                    loadings = pca.components_.T * np.sqrt(pca.explained_variance_)
+                    score_df = pd.concat([self.score_df, pd.DataFrame(components)], axis=1)
+                    score_df = score_df.rename(columns={0:'PC1', 1:'PC2'})
+
+                    fig = px.scatter(score_df, x='PC1', y='PC2', title='PCA Plot - Anomalies',
+                                     color='anomaly', hover_data=[self.category_column],
+                                     )
+
+                    for i, feature in enumerate(self.metrics_column):
+                        fig.add_shape(
+                                type='line',
+                                x0=0, y0=0,
+                                x1=loadings[i, 0],
+                                y1=loadings[i, 1]
+                                )
+                        fig.add_annotation(
+                                x=loadings[i, 0],
+                                y=loadings[i, 1],
+                                ax=0, ay=0,
+                                xanchor="center",
+                                yanchor="bottom",
+                                text=feature,
+                                )
+            return fig.show()
+        except:
+            return("Must have either model type == LODA, or metrics_column >2")
+
+
+    def graph_scatter(self, **kwargs):
+        if self.model_type or not isinstance(self.score_df, gpd.GeoDataFrame):
             plotly_args = {
                 'data_frame': self.score_df,
                 'x': self.category_column,
@@ -271,27 +267,26 @@ class CategoricalAnomalyDetector:
             }
             return px.scatter(**plotly_args)
 
-        if self.model_type:
-            if type(self.metrics_column) == str:
-                hover = [self.metrics_column]
-            else:
-                hover = self.metrics_column
-            hover.append(self.category_column)
-            hover.append('anomaly')
-            plotly_args = {
-                'data_frame': self.score_df,
-                'geojson': json.loads(self.score_df.to_json()),
-                'featureidkey': f'properties.{self.category_column}',
-                'locations': self.category_column,
-                'color': 'anomaly',
-                'hover_data': hover,
-                'opacity': 0.5,
-                'mapbox_style': 'carto-positron',
-                'center': {'lat': 44, 'lon': -79},
-                'zoom': 7,
-                'height': 720,
-                **kwargs,
-            }
-            return px.choropleth_mapbox(**plotly_args)
+
+    def graph_geo(self, **kwargs):
+        if type(self.metrics_column) is str:
+            hover = [self.metrics_column]
         else:
-            return("Please input an appropriate model name")
+            hover = self.metrics_column
+        hover.append(self.category_column)
+        hover.append('anomaly')
+        plotly_args = {
+            'data_frame': self.score_df,
+            'geojson': json.loads(self.score_df.to_json()),
+            'featureidkey': f'properties.{self.category_column}',
+            'locations': self.category_column,
+            'color': 'anomaly',
+            'hover_data': hover,
+            'opacity': 0.5,
+            'mapbox_style': 'carto-positron',
+            'center': {'lat': 44, 'lon': -79},
+            'zoom': 7,
+            'height': 720,
+            **kwargs,
+        }
+        return px.choropleth_mapbox(**plotly_args)
