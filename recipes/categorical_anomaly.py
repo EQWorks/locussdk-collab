@@ -5,7 +5,14 @@ import pandas as pd
 import geopandas as gpd
 import tqdm
 
+import rasterio
+import rasterio.mask
+from rasterio import open
+from rasterio.windows import from_bounds
+
 from collections import defaultdict
+
+import importlib
 
 import plotly.express as px
 import matplotlib.pyplot as plt
@@ -13,10 +20,8 @@ from sklearn.decomposition import PCA
 
 from sklearn.svm import OneClassSVM
 from sklearn.neighbors import LocalOutlierFactor
-from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import IsolationForest
 from anlearn.loda import LODA
-from sklearn.neighbors import LocalOutlierFactor
 from scipy.stats import nct
 
 class CategoricalAnomalyDetector:
@@ -27,7 +32,8 @@ class CategoricalAnomalyDetector:
         metrics_column: str,
         category_column: str,
         model_type: str,
-        ScalerClass = None,
+        filepath: str,
+        ScalerClass = str,
     ):
         self.df = df.copy()
         self.metrics_column = metrics_column
@@ -35,20 +41,30 @@ class CategoricalAnomalyDetector:
         self.model_type = model_type
         self.ScalerClass = ScalerClass
         self.score_df = None
-        self.scale()
+        self.scaled_df = None
+        self.filepath = filepath
 
 
-    def scale(self, ScalerClass = None):
-        if ScalerClass is None:
-            ScalerClass = self.ScalerClass
-
-        if ScalerClass:
-            scaler = ScalerClass()
-            scaler = scaler.fit(self.df[[self.metrics_column]])
-            self.df[self.metrics_column] = scaler.transform(self.df[[self.metrics_column]])
+    def scale(self,):
+        """
+        Uses importlib to allow users to select a variety of scaling options from sklearn's preprocessing module.
+        !! IMPORTANT !!
+        Users should scale their data prior to creating / fitting / predicting with their model
+        """
+        module = importlib.import_module('sklearn.preprocessing')
+        class_ = getattr(module, self.ScalerClass)
+        scaler = class_()
+        numeric_features = list(self.df.select_dtypes(include=['int64', 'float64']).columns)
+        self.scaled_df = self.df.copy()
+        self.scaled_df[numeric_features] = scaler.fit_transform(self.df[numeric_features])
+        return self.scaled_df
 
 
     def tune_params(self,df, metrics_column):
+        """
+        From this article: https://arxiv.org/pdf/1902.00567.pdf it's possible to tune the hyperparameters for a LOF model,
+        if a user selects auto_tune=True during model creation, this code will run and the parameters will be automatically tuned and selected
+        """
         eps = 1e-8
         cont_max = .1
         k_max = 50
@@ -123,6 +139,26 @@ class CategoricalAnomalyDetector:
         print("\nTuned LOF Parameters : {}".format(self.tuned_params))
         return(self.tuned_params)
 
+    def raster_to_vector(self,):
+        """
+        Given a filepath to a geotif file, will match the first layer of the raster tif to the
+        vector geometries located in the geodataframe given by the user.
+        Ex:
+        https://ghsl.jrc.ec.europa.eu/download.php?ds=pop
+        Using this dataset we can match the population geotif data with the FSA geometries in a geocohort,
+        and generate the population for each FSA
+        """
+        src = rasterio.open(self.filepath)
+        region = src.read(1, window=src.window(*self.df.geometry.total_bounds))
+        region[region<0] = None
+
+        def get_population_count(vector_polygon,raster_layer):
+            gtraster, bound = rasterio.mask.mask(raster_layer, [vector_polygon], crop=True)
+            pop_estimate = gtraster[0][gtraster[0]>0].sum()
+            return (pop_estimate.round(2))
+
+        self.df['pop_count'] = self.df['geometry'].apply(get_population_count,raster_layer=src)
+        return self.df
 
     def create_model(self,auto_tune=None, **model_args):
         if self.model_type == 'LODA':
@@ -141,15 +177,24 @@ class CategoricalAnomalyDetector:
 
 
     def predict(self, df = None):
+        """
+        Runs fit_predict on a users data, with their given inputs, and returns a df with the score (-1 for anomalous, 1 for normal data)
+        Attempts to use scaled data, if users haven't scaled their data, will default to normal data.
+
+        LODA models cannot be run with less than 2 metrics, therefore, when a user selects LODA, and only 1 metric,
+        it will automatically select all of the numeric features of the dataset.
+        """
         if df is None:
             df = self.df
-
-            if self.ScalerClass:
-                scaler = self.ScalerClass()
-                scaler = scaler.fit(df[[self.metrics_column]])
-                df[self.metrics_column] = scaler.transform(df[[self.metrics_column]])
-        score_df = df.copy()
-        if self.model_type == 'LODA':
+        try:
+            score_df = self.scaled_df.copy()
+        except:
+            score_df = self.df.copy()
+        if self.model_type == 'LODA' and (type(self.metrics_column) == list):
+            score_df['score'] = self.model.fit_predict(score_df[self.metrics_column])
+            score_df['anomaly'] = score_df['score'] <= -1
+            self.score_df = score_df
+        elif self.model_type == 'LODA' and (type(self.metrics_column) != list):
             numeric_features = list(score_df.select_dtypes(include=['int64', 'float64']).columns)
             score_df['score'] = self.model.fit_predict(score_df[numeric_features])
             score_df['anomaly'] = score_df['score'] <= -1
@@ -171,9 +216,17 @@ class CategoricalAnomalyDetector:
 
 
     def graph_highd(self, three_d: bool = None, **kwargs):
+        """
+        If users have selected more than 2 metrics, this function allows them to apply principal component analysis to their data, and graph the results
+        Allows for both 2d and 3d PCA, and is typically helpful once the metrics columns are > 3
+
+        The graph's hover data will show the non-scaled metrics_column, as scaled metrics / PCA numbers aren't generally helpful to users.
+        The size of each point is reflective of how anomalous that point is - LOF uses a score called negative_outlier_factor to score how anomalous a point is,
+        while LODA uses score_samples, which need to be rescaled to only positive integers.
+        """
         try:
             if three_d:
-                if self.model_type == 'LODA':
+                if self.model_type == 'LODA' and (type(self.metrics_column) != list):
                     numeric_features = list(self.df.select_dtypes(include=['int64', 'float64']).columns)
                     feat_vals = self.score_df[numeric_features].values
                 else:
@@ -181,30 +234,42 @@ class CategoricalAnomalyDetector:
                 pca = PCA(n_components=3)
                 components = pca.fit_transform(feat_vals)
                 total_var = pca.explained_variance_ratio_.sum() * 100
-                score_df = self.score_df
-                score_df = pd.concat([self.score_df, pd.DataFrame(components)], axis=1)
+                score_df = self.score_df.reset_index(drop=True)
+                comp = pd.DataFrame(components).reset_index(drop=True)
+                score_df = score_df.join(pd.DataFrame(comp))
                 score_df = score_df.rename(columns={0:'PC1', 1:'PC2', 2:'PC3'})
-                score_df = pd.concat([score_df, pd.DataFrame(self.model.negative_outlier_factor_)], axis=1)
-                score_df = score_df.rename(columns={0:'score1'})
-                score_df['score1'] = round(-1*score_df['score1'],4)
+                if self.model_type == 'LocalOutlierFactor':
+                    score_df = pd.concat([score_df, pd.DataFrame(self.model.negative_outlier_factor_)], axis=1) # LOF uses nof as it's score
+                    score_df = score_df.rename(columns={0:'score1'})
+                    score_df['score1'] = -1*score_df['score1']
+                else:
+                    score_df['score1'] = self.model.score_samples(self.score_df[self.metrics_column]) #LODA uses score_samples instead
+                    score_df['score1'] = (score_df['score1'] - score_df['score1'].min()) / (score_df['score1'].max() - score_df['score1'].min()) #score_samples can be negative to positive integers, to use them as scores we need to scale them to only positive integers
+                scores = self.df.reset_index().join(score_df[['score', 'anomaly', 'PC1', 'PC2', 'PC3', 'score1']])
+
                 fig = px.scatter_3d(
-                    score_df, x='PC1', y='PC2', z='PC3',
-                    color='anomaly',size='score1',size_max=25,
+                    scores, x='PC1', y='PC2', z='PC3',
+                    color='anomaly',
+                    size='score1',
+                    size_max=25,
                     title=f'Total Explained Variance: {total_var:.2f}%',
                     hover_data = [self.category_column],
                     )
 
             else:
-                if self.model_type == 'LODA':
+                if self.model_type == 'LODA' and (type(self.metrics_column) != list):
                     numeric_features = list(self.df.select_dtypes(include=['int64', 'float64']).columns)
                     feat_vals = self.score_df[numeric_features].values
                     pca = PCA(n_components=2)
                     components = pca.fit_transform(feat_vals)
                     loadings = pca.components_.T * np.sqrt(pca.explained_variance_)
-                    score_df = self.score_df
+                    score_df = self.score_df.reset_index()
                     score_df['PC1'] = components[:,0]
                     score_df['PC2'] = components[:,1]
-                    fig = px.scatter(score_df, x='PC1', y='PC2', title='PCA Plot - Anomalies',
+
+                    # Append values to non-scaled df so users can see the normal values for their features graphed
+                    scores = self.df.reset_index().join(score_df[['score', 'anomaly', 'PC1', 'PC2',]])
+                    fig = px.scatter(scores, x='PC1', y='PC2', title='PCA Plot - Anomalies',
                                      color='anomaly', hover_data=[self.category_column],
                                      )
                     for i, feature in enumerate(numeric_features):
@@ -228,10 +293,12 @@ class CategoricalAnomalyDetector:
                     pca = PCA(n_components=2)
                     components = pca.fit_transform(feat_vals)
                     loadings = pca.components_.T * np.sqrt(pca.explained_variance_)
-                    score_df = pd.concat([self.score_df, pd.DataFrame(components)], axis=1)
+                    score_df = pd.concat([self.score_df.reset_index(), pd.DataFrame(components)], axis=1).reset_index()
                     score_df = score_df.rename(columns={0:'PC1', 1:'PC2'})
 
-                    fig = px.scatter(score_df, x='PC1', y='PC2', title='PCA Plot - Anomalies',
+                    # Append values to non-scaled df so users can see the normal values for their features graphed
+                    scores = self.df.reset_index().join(score_df[['score', 'anomaly', 'PC1', 'PC2',]])
+                    fig = px.scatter(scores, x='PC1', y='PC2', title='PCA Plot - Anomalies',
                                      color='anomaly', hover_data=[self.category_column],
                                      )
 
@@ -256,9 +323,15 @@ class CategoricalAnomalyDetector:
 
 
     def graph_scatter(self, **kwargs):
+        """
+        Plots data in a simple scatter plot.
+        Again, hover over data will show the non-scaled data, so as to be more readable.
+        """
         if self.model_type or not isinstance(self.score_df, gpd.GeoDataFrame):
+            # Append values to non-scaled df so users can see the normal values for their features graphed
+            scores = self.df.join(self.score_df[['score', 'anomaly']])
             plotly_args = {
-                'data_frame': self.score_df,
+                'data_frame': scores,
                 'x': self.category_column,
                 'y': self.metrics_column,
                 'color': 'anomaly',
@@ -269,15 +342,23 @@ class CategoricalAnomalyDetector:
 
 
     def graph_geo(self, **kwargs):
+        """
+        If a uses provides a geodataframe with applicable geometries, this function maps those using Folium.
+
+        """
         if type(self.metrics_column) is str:
-            hover = [self.metrics_column]
+            hover = [self.metrics_column].copy()
         else:
-            hover = self.metrics_column
+            hover = self.metrics_column.copy()
         hover.append(self.category_column)
         hover.append('anomaly')
+        hover.append('pop_count')
+
+        # Append values to non-scaled df so users can see the normal values for their features graphed
+        scores = self.df.join(self.score_df[['score', 'anomaly']])
         plotly_args = {
-            'data_frame': self.score_df,
-            'geojson': json.loads(self.score_df.to_json()),
+            'data_frame': scores,
+            'geojson': json.loads(scores.to_json()),
             'featureidkey': f'properties.{self.category_column}',
             'locations': self.category_column,
             'color': 'anomaly',
