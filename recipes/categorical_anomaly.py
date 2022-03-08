@@ -7,8 +7,6 @@ import tqdm
 
 import rasterio
 import rasterio.mask
-from rasterio import open
-from rasterio.windows import from_bounds
 
 from collections import defaultdict
 
@@ -32,7 +30,7 @@ class CategoricalAnomalyDetector:
         metrics_column: str,
         category_column: str,
         model_type: str,
-        filepath: str,
+        geotif_path: str,
         ScalerClass = str,
     ):
         self.df = df.copy()
@@ -42,7 +40,7 @@ class CategoricalAnomalyDetector:
         self.ScalerClass = ScalerClass
         self.score_df = None
         self.scaled_df = None
-        self.filepath = filepath
+        self.geotif_path = geotif_path
 
 
     def scale(self,):
@@ -139,7 +137,8 @@ class CategoricalAnomalyDetector:
         print("\nTuned LOF Parameters : {}".format(self.tuned_params))
         return(self.tuned_params)
 
-    def raster_to_vector(self,):
+
+    def raster_to_vector(self, geotif_path = None):
         """
         Given a filepath to a geotif file, will match the first layer of the raster tif to the
         vector geometries located in the geodataframe given by the user.
@@ -148,17 +147,15 @@ class CategoricalAnomalyDetector:
         Using this dataset we can match the population geotif data with the FSA geometries in a geocohort,
         and generate the population for each FSA
         """
-        src = rasterio.open(self.filepath)
-        region = src.read(1, window=src.window(*self.df.geometry.total_bounds))
-        region[region<0] = None
+        fpath = geotif_path or self.geotif_path
+        with rasterio.open(fpath) as src:
+            def get_population_count(vector_polygon,raster_layer):
+                gtraster = rasterio.mask.mask(raster_layer, [vector_polygon], crop=True)
+                pop_estimate = gtraster[0][gtraster[0] > 0].sum()
+                return pop_estimate.round(2)
+            self.df['pop_count'] = self.df['geometry'].apply(get_population_count,raster_layer=src)
+            return self.df
 
-        def get_population_count(vector_polygon,raster_layer):
-            gtraster, bound = rasterio.mask.mask(raster_layer, [vector_polygon], crop=True)
-            pop_estimate = gtraster[0][gtraster[0]>0].sum()
-            return (pop_estimate.round(2))
-
-        self.df['pop_count'] = self.df['geometry'].apply(get_population_count,raster_layer=src)
-        return self.df
 
     def create_model(self,auto_tune=None, **model_args):
         if self.model_type == 'LODA':
@@ -190,11 +187,11 @@ class CategoricalAnomalyDetector:
             score_df = self.scaled_df.copy()
         except:
             score_df = self.df.copy()
-        if self.model_type == 'LODA' and (type(self.metrics_column) == list):
+        if self.model_type == 'LODA' and ((type(self.metrics_column) == list) and len(self.metrics_column) > 1):
             score_df['score'] = self.model.fit_predict(score_df[self.metrics_column])
             score_df['anomaly'] = score_df['score'] <= -1
             self.score_df = score_df
-        elif self.model_type == 'LODA' and (type(self.metrics_column) != list):
+        elif self.model_type == 'LODA' and type(self.metrics_column) != list or (type(self.metrics_column) == list and len(self.metrics_column) < 2):
             numeric_features = list(score_df.select_dtypes(include=['int64', 'float64']).columns)
             score_df['score'] = self.model.fit_predict(score_df[numeric_features])
             score_df['anomaly'] = score_df['score'] <= -1
@@ -207,7 +204,7 @@ class CategoricalAnomalyDetector:
             score_df['score'] = self.model.fit_predict(score_df[[self.metrics_column]].values)
             score_df['anomaly'] = score_df['score'] <= -1
             self.score_df = score_df
-        return score_df
+        return self.score_df
 
 
     def get_anomalies(self):
@@ -347,7 +344,7 @@ class CategoricalAnomalyDetector:
 
         """
         if type(self.metrics_column) is str:
-            hover = [self.metrics_column].copy()
+            hover = [self.metrics_column]
         else:
             hover = self.metrics_column.copy()
         hover.append(self.category_column)
