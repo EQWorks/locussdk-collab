@@ -27,6 +27,7 @@ def get_population_count(vector_polygon, raster_layer):
     pop_estimate = gtraster[0][gtraster[0] > 0].sum()
     return pop_estimate.round(2)
 
+
 class CategoricalAnomalyDetector:
 
     def __init__(
@@ -161,6 +162,21 @@ class CategoricalAnomalyDetector:
         with rasterio.open(fpath) as src:
             self.df['pop_count'] = self.df['geometry'].apply(get_population_count, raster_layer=src)
             return self.df
+
+
+    def normalize(self, field_1 = None,):
+        """
+        Given a field, will normalize the numerical features in a dataset by
+        that feature.
+        For example, using population count for an FSA dataset will divide the
+        numerical features of the dataset by the population count
+        """
+        numeric_features = list(self.df.select_dtypes(include=['int64', 'float64']).columns)
+        numeric_features.remove(field_1)
+        self.df[numeric_features] = self.df[numeric_features].div(self.df[field_1], axis=0)
+        self.df = self.df.fillna(0)
+        self.df = self.df.replace([np.inf, -np.inf], 0)
+        return self.df
 
 
     def create_model(self, auto_tune=None, **model_args):
