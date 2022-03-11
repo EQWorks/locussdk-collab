@@ -164,16 +164,20 @@ class CategoricalAnomalyDetector:
             return self.df
 
 
-    def normalize(self, field_1 = None,):
+    def normalize(self, field=None, features_to_skip=None):
         """
         Given a field, will normalize the numerical features in a dataset by
-        that feature.
-        For example, using population count for an FSA dataset will divide the
-        numerical features of the dataset by the population count
+        that feature, will allowing the user to input a list of features they
+        might want to be skipped - features that are already ratios for example
+        Ex:
+        Using population count for an FSA dataset will divide the
+        numerical features of the dataset by the population count, while entering
+        CTR and IpC as features_to_skip will skip those (they can later be scaled)
         """
         numeric_features = list(self.df.select_dtypes(include=['int64', 'float64']).columns)
-        numeric_features.remove(field_1)
-        self.df[numeric_features] = self.df[numeric_features].div(self.df[field_1], axis=0)
+        numeric_features.remove(field)
+        numeric_features = [drop for drop in numeric_features if drop not in features_to_skip]
+        self.df[numeric_features] = self.df[numeric_features].div(self.df[field], axis=0)
         self.df = self.df.fillna(0)
         self.df = self.df.replace([np.inf, -np.inf], 0)
         return self.df
@@ -282,9 +286,11 @@ class CategoricalAnomalyDetector:
                     scores, x='PC1', y='PC2', z='PC3',
                     color='anomaly',
                     size='score1',
-                    size_max=25,
+                    size_max=60,
                     title=f'Total Explained Variance: {total_var:.2f}%',
                     hover_data = [self.category_column],
+                    width=800,
+                    height=800,
                     )
 
             else:
@@ -303,6 +309,8 @@ class CategoricalAnomalyDetector:
                     scores = self.df.reset_index().join(score_df[['score', 'anomaly', 'PC1', 'PC2',]])
                     fig = px.scatter(scores, x='PC1', y='PC2', title='PCA Plot - Anomalies',
                                      color='anomaly', hover_data=[self.category_column],
+                                    width=800,
+                                    height=800,
                                      )
                     for i, feature in enumerate(numeric_features):
                         fig.add_shape(
@@ -333,6 +341,8 @@ class CategoricalAnomalyDetector:
                     scores = self.df.reset_index().join(score_df[['score', 'anomaly', 'PC1', 'PC2',]])
                     fig = px.scatter(scores, x='PC1', y='PC2', title='PCA Plot - Anomalies',
                                      color='anomaly', hover_data=[self.category_column],
+                                    width=800,
+                                    height=800,
                                      )
 
                     for i, feature in enumerate(self.metrics_column):
