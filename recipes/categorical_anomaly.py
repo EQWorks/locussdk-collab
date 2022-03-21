@@ -46,6 +46,7 @@ class CategoricalAnomalyDetector:
         self.ScalerClass = ScalerClass
         self.score_df = None
         self.scaled_df = None
+        self.norm_df = None
         self.geotif_path = geotif_path
 
 
@@ -61,7 +62,10 @@ class CategoricalAnomalyDetector:
         class_ = getattr(module, self.ScalerClass)
         scaler = class_()
         numeric_features = list(self.df.select_dtypes(include=['int64', 'float64']).columns)
-        self.scaled_df = self.df.copy()
+        try:
+            self.scaled_df = self.norm_df.copy()
+        except:
+            self.scaled_df = self.df.copy()
         self.scaled_df[numeric_features] = scaler.fit_transform(self.df[numeric_features])
         return self.scaled_df
 
@@ -77,17 +81,16 @@ class CategoricalAnomalyDetector:
         cont_max = .1
         k_max = 50
         cont_steps = 100
-        k_grid = np.arange(1, k_max + 1)  # neighbors
-        cont_grid = np.linspace(0.005, cont_max, cont_steps)  # contamination
+        k_grid = np.arange(1, k_max + 1)  # neighbours search space
+        cont_grid = np.linspace(0.005, cont_max, cont_steps)  # contamination search space
         collector = []
         n_samples = df.shape[0]
 
         for contamination in tqdm.tqdm(cont_grid):
-            samps = int(contamination * n_samples)
-            if samps < 2:
+            samples = int(contamination * n_samples)
+            if samples < 2:
                 continue
 
-            # init running metrics
             running_metrics = defaultdict(list)
             for k in k_grid:
                 clf = LocalOutlierFactor(n_neighbors=k, contamination=contamination)
@@ -96,18 +99,18 @@ class CategoricalAnomalyDetector:
                 else:
                     clf.fit_predict(df[[metrics_column]])
                 X_scores = np.log(- clf.negative_outlier_factor_)
-                t0 = X_scores.argsort()  # [::-1]
-                top_k = t0[-samps:]
-                min_k = t0[:samps]
+                t0 = X_scores.argsort()[::-1]
+                cn_outliers = t0[-samples:]
+                cn_top_inliers = t0[(2*-samples):-samples]
 
-                x_out = X_scores[top_k]
-                x_in = X_scores[min_k]
+                x_out = X_scores[cn_outliers]
+                x_in = X_scores[cn_top_inliers]
 
                 mc_out = np.mean(x_out)
                 mc_in = np.mean(x_in)
                 vc_out = np.var(x_out)
                 vc_in = np.var(x_in)
-                Tck = (mc_out - mc_in)/np.sqrt((eps + ((1/samps)*(vc_out + vc_in))))
+                Tck = (mc_out - mc_in)/np.sqrt((eps + ((1/samples)*(vc_out + vc_in))))
 
                 running_metrics['tck'].append(Tck)
                 running_metrics['mck_out'].append(mc_out)
@@ -121,8 +124,8 @@ class CategoricalAnomalyDetector:
             mean_vc_out = np.mean(running_metrics['vck_out'])
             mean_vc_in = np.mean(running_metrics['vck_in'])
 
-            ncpc = (mean_mc_out - mean_mc_in)/np.sqrt((eps + ((1/samps)*(mean_vc_out + mean_vc_in))))
-            dfc = (2*samps) - 2
+            ncpc = (mean_mc_out - mean_mc_in)/np.sqrt((eps + ((1/samples)*(mean_vc_out + mean_vc_in))))
+            dfc = (2*samples) - 2
 
             if dfc <= 0:
                 continue
@@ -136,11 +139,9 @@ class CategoricalAnomalyDetector:
         max_cdf = 0.
         self.tuned_params = {}
         for v in collector:
-            Kopt, T_opt, Z, contamination = v
+            K_opt, T_opt, Z, contamination = v
             if Z > max_cdf:
                 max_cdf = Z
-
-            if max_cdf == Z:
                 self.tuned_params['k'] = K_opt
                 self.tuned_params['c'] = contamination
         print("\nTuned LOF Parameters : {}".format(self.tuned_params))
@@ -160,7 +161,8 @@ class CategoricalAnomalyDetector:
         """
         fpath = geotif_path or self.geotif_path
         with rasterio.open(fpath) as src:
-            self.df['pop_count'] = self.df['geometry'].apply(get_population_count, raster_layer=src)
+            self.df['pop_count'] = self.df['geometry'].apply(get_population_count,
+                                                                raster_layer=src)
             return self.df
 
 
@@ -174,13 +176,14 @@ class CategoricalAnomalyDetector:
         numerical features of the dataset by the population count, while entering
         CTR and IpC as features_to_skip will skip those (they can later be scaled)
         """
-        numeric_features = list(self.df.select_dtypes(include=['int64', 'float64']).columns)
+        self.norm_df = self.df.copy()
+        numeric_features = list(self.norm_df.select_dtypes(include=['int64', 'float64']).columns)
         numeric_features.remove(field)
         numeric_features = [drop for drop in numeric_features if drop not in features_to_skip]
-        self.df[numeric_features] = self.df[numeric_features].div(self.df[field], axis=0)
-        self.df = self.df.fillna(0)
-        self.df = self.df.replace([np.inf, -np.inf], 0)
-        return self.df
+        self.norm_df[numeric_features] = self.norm_df[numeric_features].div(self.norm_df[field], axis=0)
+        self.norm_df = self.norm_df.fillna(0)
+        self.norm_df = self.norm_df.replace([np.inf, -np.inf], 0)
+        return self.norm_df
 
 
     def create_model(self, auto_tune=None, **model_args):
@@ -206,7 +209,6 @@ class CategoricalAnomalyDetector:
         and returns a df with the score (-1 for anomalous, 1 for normal data)
         Attempts to use scaled data, if users haven't scaled their data,
         will default to normal data.
-
         LODA models cannot be run with less than 2 metrics, therefore, when a
         user selects LODA, and only 1 metric, it will automatically select all
         of the numeric features of the dataset.
@@ -221,7 +223,7 @@ class CategoricalAnomalyDetector:
             score_df['score'] = self.model.fit_predict(score_df[self.metrics_column])
             score_df['anomaly'] = score_df['score'] <= -1
             self.score_df = score_df
-        elif self.model_type == 'LODA' and type(self.metrics_column) is not list or (type(self.metrics_column) is list and len(self.metrics_column) < 2):
+        elif self.model_type == 'LODA' and (type(self.metrics_column) is not list or (type(self.metrics_column) is list and len(self.metrics_column) < 2)):
             numeric_features = list(score_df.select_dtypes(include=['int64', 'float64']).columns)
             score_df['score'] = self.model.fit_predict(score_df[numeric_features])
             score_df['anomaly'] = score_df['score'] <= -1
@@ -247,10 +249,8 @@ class CategoricalAnomalyDetector:
         If users have selected more than 2 metrics, this function
         allows them to apply principal component analysis to their data,
         and graph the results.
-
         Allows for both 2d and 3d PCA (three_d = True), and is typically
         helpful once the metrics columns are > 3
-
         The graph's hover data will show the non-scaled metrics_column,
         as scaled metrics / PCA numbers aren't generally helpful to users.
         The size of each point is reflective of how anomalous that point is
@@ -260,9 +260,10 @@ class CategoricalAnomalyDetector:
         """
         try:
             if three_d:
-                if self.model_type == 'LODA' and (type(self.metrics_column) is not list):
+                if self.model_type == 'LODA' and (type(self.metrics_column) is not list or (type(self.metrics_column) is list and len(self.metrics_column) < 2)):
                     numeric_features = list(self.df.select_dtypes(include=['int64', 'float64']).columns)
                     feat_vals = self.score_df[numeric_features].values
+                    self.metrics_column = numeric_features
                 else:
                     feat_vals = self.score_df[self.metrics_column].values
                 pca = PCA(n_components=3)
@@ -279,8 +280,11 @@ class CategoricalAnomalyDetector:
                 else:
                     score_df['score1'] = self.model.score_samples(self.score_df[self.metrics_column])  # LODA uses score_samples instead
                     score_df['score1'] = (score_df['score1'] - score_df['score1'].min()) / (score_df['score1'].max() - score_df['score1'].min())
-                    # score_samples can be negative to positive integers, to use them as scores we need to scale them to only positive integers
-                scores = self.df.reset_index().join(score_df[['score', 'anomaly', 'PC1', 'PC2', 'PC3', 'score1']])
+                    # score_samples can be negative to positive integers, to
+                    # use them as scores we need to scale them to only positive integers
+                scores = self.df.reset_index().join(score_df[['score',
+                                            'anomaly', 'PC1', 'PC2',
+                                            'PC3', 'score1']])
 
                 fig = px.scatter_3d(
                     scores, x='PC1', y='PC2', z='PC3',
@@ -288,78 +292,48 @@ class CategoricalAnomalyDetector:
                     size='score1',
                     size_max=60,
                     title=f'Total Explained Variance: {total_var:.2f}%',
-                    hover_data = [self.category_column],
+                    hover_data=[self.category_column],
                     width=800,
                     height=800,
                     )
-
             else:
-                if self.model_type == 'LODA' and (type(self.metrics_column) != list):
+                if self.model_type == 'LODA' and (type(self.metrics_column) is not list or (type(self.metrics_column) is list and len(self.metrics_column) < 2)):
                     numeric_features = list(self.df.select_dtypes(include=['int64', 'float64']).columns)
                     feat_vals = self.score_df[numeric_features].values
+                    self.metrics_column = numeric_features
+                else:
+                    feat_vals = self.score_df[self.metrics_column].values
                     pca = PCA(n_components=2)
-                    components = pca.fit_transform(feat_vals)
-                    loadings = pca.components_.T * np.sqrt(pca.explained_variance_)
-                    score_df = self.score_df.reset_index()
-                    score_df['PC1'] = components[:,0]
-                    score_df['PC2'] = components[:,1]
+                components = pca.fit_transform(feat_vals)
+                loadings = pca.components_.T * np.sqrt(pca.explained_variance_)
+                score_df = self.score_df.reset_index()
+                score_df['PC1'] = components[:,0]
+                score_df['PC2'] = components[:,1]
 
-                    # Append values to non-scaled df so users can see
-                    # the normal values for their features graphed
-                    scores = self.df.reset_index().join(score_df[['score', 'anomaly', 'PC1', 'PC2',]])
-                    fig = px.scatter(scores, x='PC1', y='PC2', title='PCA Plot - Anomalies',
-                                     color='anomaly', hover_data=[self.category_column],
-                                    width=800,
-                                    height=800,
-                                     )
-                    for i, feature in enumerate(numeric_features):
-                        fig.add_shape(
+                # Append values to non-scaled df so users can see
+                # the normal values for their features graphed
+                scores = self.df.reset_index().join(score_df[['score', 'anomaly', 'PC1', 'PC2',]])
+                fig = px.scatter(scores, x='PC1', y='PC2', title='PCA Plot - Anomalies',
+                                 color='anomaly', hover_data=[self.category_column],
+                                width=800,
+                                height=800,
+                                 )
+
+                for i, feature in enumerate(self.metrics_column):
+                    fig.add_shape(
                             type='line',
                             x0=0, y0=0,
                             x1=loadings[i, 0],
                             y1=loadings[i, 1]
-                                )
-                        fig.add_annotation(
-                                x=loadings[i, 0],
-                                y=loadings[i, 1],
-                                ax=0, ay=0,
-                                xanchor="center",
-                                yanchor="bottom",
-                                text=feature,
-                                    )
-
-                else:
-                    feat_vals = self.score_df[self.metrics_column].values
-                    pca = PCA(n_components=2)
-                    components = pca.fit_transform(feat_vals)
-                    loadings = pca.components_.T * np.sqrt(pca.explained_variance_)
-                    score_df = pd.concat([self.score_df.reset_index(), pd.DataFrame(components)], axis=1).reset_index()
-                    score_df = score_df.rename(columns={0:'PC1', 1:'PC2'})
-
-                    # Append values to non-scaled df so users can see
-                    # the normal values for their features graphed
-                    scores = self.df.reset_index().join(score_df[['score', 'anomaly', 'PC1', 'PC2',]])
-                    fig = px.scatter(scores, x='PC1', y='PC2', title='PCA Plot - Anomalies',
-                                     color='anomaly', hover_data=[self.category_column],
-                                    width=800,
-                                    height=800,
-                                     )
-
-                    for i, feature in enumerate(self.metrics_column):
-                        fig.add_shape(
-                                type='line',
-                                x0=0, y0=0,
-                                x1=loadings[i, 0],
-                                y1=loadings[i, 1]
-                                )
-                        fig.add_annotation(
-                                x=loadings[i, 0],
-                                y=loadings[i, 1],
-                                ax=0, ay=0,
-                                xanchor="center",
-                                yanchor="bottom",
-                                text=feature,
-                                )
+                            )
+                    fig.add_annotation(
+                            x=loadings[i, 0],
+                            y=loadings[i, 1],
+                            ax=0, ay=0,
+                            xanchor="center",
+                            yanchor="bottom",
+                            text=feature,
+                            )
             return fig.show()
         except:
             return("Must have either model type == LODA, or metrics_column >2")
